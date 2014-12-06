@@ -1,0 +1,63 @@
+# Basic server info
+monitor:
+  # IP to monitor
+  ip: 127.0.0.1
+  port: 7777
+  # How many times the server is permitted to fail to run before the script gives up.
+  max-fails: 3
+  # How long the script waits for the server to reply before force-restarting it
+  timeout: 30.0
+  # Wait for server to end round before updating?
+  wait-for-ready: true
+  # Use threading on the server?  (Default: False)
+  threads: false
+  
+commands:
+  # Compile parameters
+  compile:
+    # DME to compile
+    dme: baystation12.dme
+    # Map replacement (WIP)
+    map:
+      match: maps[\/]([a-z]+).dmm
+      replace: maps\tgstation.dmm
+git:
+  # Server configuration repository
+  config:
+    # Branch to use
+    branch: master
+    # Repo URL (Ensure SSH key is generated if using SSH)
+    remote: git@git.nexisonline.net:vgstation/config.git
+    # Where to stage this before compile
+    path:   /home/gmod/byond/repos/config/
+    # If needed, you can also specify the name of the remote to use when pulling.
+    # Default: "origin"
+    #remotename: origin
+  # The actual game code repo
+  game:
+    branch: Bleeding-Edge
+    remote: https://github.com/d3athrow/vgstation13.git
+    path:   /home/gmod/byond/repos/game/
+  # Patches (used on /vg/ for security-related stuff and closed-source secrets)
+  # This gets copied over the game repo's contents.
+  # Comment out this block if you don't need it.
+  patches:
+    branch: master
+    remote: git@git.nexisonline.net:vgstation/secrets.git
+    path:   /home/gmod/byond/repos/patches/
+# NUDGE2
+nudge:
+  # Identifier tag
+  id: Main Server
+  # IP/hostname
+  ip: localhost
+  # Port of the nudge receiver
+  port: 45678
+  # Access key (Nudge 2.0 only, ignored for nudge 1)
+  key: ""
+# Self-explanatory
+paths:
+  byond:    /home/gmod/byond
+  crashlog: /home/gmod/byond/crashlogs/
+  run:      /home/gmod/byond/tgstation/
+  stats:    /home/gmod/byond/stats.json
