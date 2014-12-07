@@ -17,10 +17,15 @@ commands:
   compile:
     # DME to compile
     dme: baystation12.dme
-    # Map replacement (WIP)
-    map:
-      match: maps[\/]([a-z]+).dmm
-      replace: maps\tgstation.dmm
+    # Map Voting
+    map-voting:
+      # Line to find in the DME (regular expression)
+      match: 'maps[\\/]([a-z]+).dmm'
+      # List of Map Name => what to replace the regex above with.
+      maps:
+        'Box Station': 'maps\\tgstation.dmm'
+        'Metaclub':    'maps\\metaclub.dmm'
+        'Deficiency':  'maps\\defficiency.dmm'
 git:
   # Server configuration repository
   config:

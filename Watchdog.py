@@ -38,9 +38,13 @@ default_config = {
 	'commands': {
 		'compile': {
 			'dme': 'baystation12.dme',
-			'map': {
+			'map-voting': {
 				'match': 'maps[\\/]([a-z]+).dmm',
-				'replace': 'maps\\tgstation.dmm',
+				'maps': {
+					'Box Station': 'maps\tgstation.dmm',
+					'Metaclub':    'maps\metaclub.dmm',
+					'Deficiency':  'maps\defficiency.dmm',
+				}
 			}
 		},
 	},
@@ -117,7 +121,7 @@ def Compile(serverState, no_restart=False):
 	dme = config.get('commands.compile.dme', 'tgstation.dme')
 	
 	log.info('Copying from staging...')
-	os_utils.copytree(config.get('git.game.path'), config.get('paths.run'), ignore=['.git/', '.bak'], verbose=True)
+	os_utils.copytree(config.get('git.game.path'), config.get('paths.run'), ignore=['.git/', '.bak'], verbose=False)
 					
 	if config.get('git.patches.path') is not None:
 		log.info('Copying patches...')
@@ -126,69 +130,90 @@ def Compile(serverState, no_restart=False):
 	# sys.exit(1)
 	
 	# updateConfig(currentBranch, config.get('git.game.remotename','origin'), currentCommit)
-	
-	map_find = re.compile('{}'.format(config.get('commands.compile.map.match', None)))
-	map_replace = config.get('commands.compile.map.replace', None)
-	
+	map_find = re.compile('{}'.format(config.get('commands.compile.map-voting.match', None)))
+	map_list = config.get('commands.compile.map-voting.maps', {'':None})
 	with QChdir(config.get('paths.run')):
-		if map_find is not None:
-			with log.info('Patching {}...'.format(dme)):
-				fn, ext = os.path.splitext(dme)
-				new_dme = fn + '.mdme'
-				ln = 0
-				changes = 0
-				with open(dme, 'r') as orig:
-					with open(new_dme, 'w') as new:
-						for line in orig:
-							ln += 1
-							origline = line = line.strip()
-							line = map_find.sub(map_replace, line)
-							new.write(line + '\n')
-							if origline != line:
-								log.info('Changed line {}.'.format(ln))
-								changes += 1
-			dme = new_dme
-			log.info('Wrote {}, {} changes.'.format(dme, changes))
-	
-		# Compile
-		warnings = 0
-		errors = 0
-		with log.info('Compiling...'):
-			stdout, stderr = cmd_output(['DreamMaker', dme], echo=True)
-			locked = False
-			if stdout or stderr:
-				skip_next_errors = 0
+		base_dmb = None
+		for map_name, map_filename in map_list.items():
+			map_outdir = None
+			if map_find is not None and map_filename is not None:
+				map_outdir = os.path.join(config.get('paths.run'), 'maps', 'voting', map_name)
+				with log.info('Patching {}...'.format(dme)):
+					fn, ext = os.path.splitext(dme)
+					new_dme = fn + '.mdme'
+					ln = 0
+					changes = 0
+					with open(dme, 'r') as orig:
+						with open(new_dme, 'w') as new:
+							for line in orig:
+								ln += 1
+								origline = line = line.strip()
+								line, nchange = map_find.subn(map_filename, line)
+								if nchange > 0:
+									log.info('Changed line #{}.'.format(ln))
+									log.info(' - '+origline)
+									log.info(' + '+line)
+									changes += 1
+								new.write(line + '\n')
+				os.rename(new_dme, dme)
 				
-				for line in (stdout + stderr).split('\n'):
+				log.info('Wrote {}, {} changes.'.format(dme, changes))
+		
+			# Compile
+			warnings = 0
+			errors = 0
+			msg = 'Compiling...'
+			if map_find is not None and map_filename is not None:
+				msg = 'Compiling for {}...'.format(map_name)
+				if not os.path.isdir(map_outdir):
+					os.makedirs(map_outdir)
+			with log.info('Compiling...'):
+				stdout, stderr = cmd_output(['DreamMaker', dme], echo=True)
+				locked = False
+				if stdout or stderr:
+					skip_next_errors = 0
 					
-					line = line.strip()
-					if line.startswith('BUG:') and line.endswith('is locked up!'):
-						# BUG: The file /home/gmod/byond/tgstation/baystation12.mdme.rsc is locked up!
-						skip_next_errors += 1
-						log.error(line)
-						if not locked:
-							send_nudge('COMPILE ERROR: RSC file is locked! Skipping further RSC errors.')
-							locked = True
-					elif 'error:' in line or 'BUG:' in line:
-						errors += 1
-						if skip_next_errors > 0:
-							skip_next_errors -= 1
-							continue
-						send_nudge('COMPILE ERROR: {0}'.format(line))
-						log.error(line)
-					elif 'warning:' in line:
-						warnings += 1
-						log.warn(line)
-					else:
-						log.info(line)
+					for line in (stdout + stderr).split('\n'):
+						
+						line = line.strip()
+						if line.startswith('BUG:') and line.endswith('is locked up!'):
+							# BUG: The file /home/gmod/byond/tgstation/baystation12.mdme.rsc is locked up!
+							skip_next_errors += 1
+							log.error(line)
+							if not locked:
+								send_nudge('COMPILE ERROR: RSC file is locked! Skipping further RSC errors.')
+								locked = True
+						elif 'error:' in line or 'BUG:' in line:
+							errors += 1
+							if skip_next_errors > 0:
+								skip_next_errors -= 1
+								continue
+							send_nudge('COMPILE ERROR: {0}'.format(line))
+							log.error(line)
+						elif 'warning:' in line:
+							warnings += 1
+							log.warn(line)
+						else:
+							log.info(line)
 					
-	if errors > 0:
-		msg = 'Compile failed ({} warnings, {} errors). Waiting for next commit.'.format(warnings,errors)
-		send_nudge(msg)
-		log.warn(msg)
-		waiting_for_next_commit = True
-		return
+			if errors > 0:
+				msg = 'Compile failed ({} warnings, {} errors). Waiting for next commit.'.format(warnings, errors)
+				send_nudge(msg)
+				log.warn(msg)
+				waiting_for_next_commit = True
+				return
+			elif map_outdir is not None:
+				output_file = os.path.join(map_outdir, config.get('compile.dme', 'baystation12.dmb'))
+				log.info('Copying {} to {}...'.format(getDMB(), output_file))
+				shutil.move(getDMB(), output_file)
+				if base_dmb is None:
+					base_dmb = output_file
+				send_nudge('Completed updating {}...'.format(map_name))
 	
+		if base_dmb is not None:
+			shutil.copy2(base_dmb, config.get('compile.dme', 'baystation12.dmb'))
+			log.info('Copied {} to {}...'.format(base_dmb, config.get('compile.dme', 'baystation12.dmb')))
+			
 	next_nudge = 'Update completed ({} warnings). Restarting...'.format(warnings)
 	if waiting_for_next_commit:
 		next_nudge = 'Update completed ({} warnings), and successfully compiled! Restarting...'.format(warnings)
@@ -372,6 +397,14 @@ def findDD():
 				log.info('Found DreamDaemon running as process #{}'.format(dd_proc.pid))
 				break
 			
+def getDMB(ignore_mapvoting=False):
+	dme_filename = config.get('compile.dme', 'baystation12.dmb')
+	
+	#if config.get('commands.compile.map-voting.match', None) is not None and not ignore_mapvoting:
+	#	filename, ext = os.path.splitext(dme_filename)
+	#	dme_filename = filename + '.mdme.dmb'
+	return dme_filename
+			
 def restartServer():
 	global dd_proc
 	findDD()
@@ -381,12 +414,8 @@ def restartServer():
 		log.warn('DreamDaemon still running, process killed.')
 		send_nudge('DreamDaemon still running, process killed.')
 	
-	dme_filename = config.get('compile.dme', 'baystation12.dmb')
+	dme_filename = getDMB(ignore_mapvoting=True)
 	
-	if config.get('commands.compile.map.match', None):
-		filename, ext = os.path.splitext(dme_filename)
-		dme_filename = filename + '.mdme.dmb'
-		
 	# DreamDaemon baystation12 1336 -trusted -threads off
 	args = [
 		dme_filename,
@@ -529,17 +558,27 @@ with log.info('Gathering git repository statuses...'):
 		
 checkForUpdates(True)
 	
-dmb_filename = config.get('compile.dme', 'baystation12.dme')
-dmb_filename, dmb_ext = os.path.splitext(dmb_filename)
-if config.get('commands.compile.map.match', None):
-	dmb_filename += '.mdme.dmb'
-else:
-	dmb_filename += '.dmb'
+dmb_filename = getDMB(ignore_mapvoting=True)
 dmb_filepath = os.path.join(config.get('paths.run'), dmb_filename)
+
+need_compile=False
 if not os.path.isfile(dmb_filepath):
-	msg = '{} missing, recompiling.'.format(os.path.basename(dmb_filename))
+	msg = 'Main DMB ({}) missing!'.format(os.path.basename(dmb_filename))
 	log.warn(msg)
 	send_nudge(msg)
+	need_compile = True
+	
+map_list = config.get('commands.compile.map-voting.maps', {'':None})
+for map_name, map_filename in map_list.items():
+	if map_filename is not None:
+		map_dmb = os.path.join(config.get('paths.run'), 'maps', 'voting', map_name, os.path.basename(dmb_filename))
+		if not os.path.isfile(map_dmb):
+			need_compile = True
+			msg = 'DMB for map {} missing!'.format(map_dmb)
+			log.warn(msg)
+			send_nudge(msg)
+		
+if need_compile: 
 	Compile(False, no_restart=True)
 
 waiting_on_server_response = os.path.isfile(os.path.join(config.get('paths.run'), 'data', 'UPDATE_READY.txt'))
