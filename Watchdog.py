@@ -311,7 +311,7 @@ def updateConfig():
 	gameConfigPath = os.path.join(gamePath,'config')
 	
 	# cmd(['cp', '-a', cfgPath, gamePath])
-	os_utils.copytree(cfgPath, gameConfigPath, ignore=['.git/', '.bak', 'mode.txt'], verbose=True)
+	os_utils.copytree(cfgPath, gameConfigPath, ignore=['.git/', '.bak', 'mode.txt'], verbose=False)
 
 	# Copy gamemode, if it exists.
 	botConfigSource = os.path.join(cfgPath, 'mode.txt')
