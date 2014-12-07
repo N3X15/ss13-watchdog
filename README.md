@@ -1,18 +1,14 @@
-/vg/station Server Watchdog 2.0
-===============================
+# /vg/station Server Watchdog 2.0
 
 A configurable SS13 server monitoring and auto-update tool.
 
-License
--------
+## License
 
 See LICENSE.
 
-Installation
-------------
+## Installation
 
-Windows
-~~~~~~~
+### Windows
 
 0. Install BYOND.
 1. Install Python 2.7 from http://python.org and ensure it's in PATH
@@ -23,12 +19,11 @@ Windows
 6. Edit the config.yml.dist file to taste, and save it as config.yml.
 7. Launch Watchdog.py
 
-Linux
-~~~~~~~
+### Linux
 
-# Create a user for the gameserver
-# Install BYOND
-# Run the following:
+0. Create a user for the gameserver
+1. Install BYOND
+2. Run the following:
 
 ```
 ## AS WHEEL USER:
