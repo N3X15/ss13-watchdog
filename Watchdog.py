@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import urllib
+import platform
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(script_dir, 'lib', 'buildtools'))
@@ -85,6 +86,8 @@ config = Config('config.yml', default_config)
 last_response = {}
 
 def send_nudge(message):
+	if config.get('nudge',None) is None:
+		return
 	try:
 		data = {}
 		
@@ -113,23 +116,23 @@ def Compile(serverState, no_restart=False):
 	log.info('Code is at {0} ({1}).  Triggering compile.'.format(currentCommit, currentBranch))
 	
 	for process in psutil.process_iter():
-		if process.name() == 'DreamDaemon' and process.is_running():
-			log.info('Killing DreamDaemon PID#{}...'.format(process.pid))
-			process.kill()
-			process.wait()
+		try:
+			if process.name() == DREAMDAEMON_IMAGE and process.is_running():
+				log.info('Killing DreamDaemon PID#{}...'.format(process.pid))
+				process.kill()
+				process.wait()
+		except psutil.AccessDenied:
+			continue
 	
 	dme = config.get('commands.compile.dme', 'tgstation.dme')
 	
-	log.info('Copying from staging...')
-	os_utils.copytree(config.get('git.game.path'), config.get('paths.run'), ignore=['.git/', '.bak'], verbose=False)
+	with os_utils.TimeExecution('Copy staging'):
+		os_utils.copytree(os.path.abspath(config.get('git.game.path')), os.path.abspath(config.get('paths.run')), ignore=['.git/', '.bak'], verbose=False)
 					
 	if config.get('git.patches.path') is not None:
-		log.info('Copying patches...')
-		os_utils.copytree(config.get('git.patches.path'), config.get('paths.run'), ignore=['.git/', '.bak'], verbose=False)
+		with os_utils.TimeExecution('Copy patches'):
+			os_utils.copytree(os.path.abspath(config.get('git.patches.path')), os.path.abspath(config.get('paths.run')), ignore=['.git/', '.bak'], verbose=False)
 	
-	# sys.exit(1)
-	
-	# updateConfig(currentBranch, config.get('git.game.remotename','origin'), currentCommit)
 	map_find = re.compile('{}'.format(config.get('commands.compile.map-voting.match', None)))
 	map_list = config.get('commands.compile.map-voting.maps', {'':None})
 	with QChdir(config.get('paths.run')):
@@ -155,6 +158,8 @@ def Compile(serverState, no_restart=False):
 									log.info(' + '+line)
 									changes += 1
 								new.write(line + '\n')
+				if os.path.isfile(dme):
+					os.remove(dme)
 				os.rename(new_dme, dme)
 				
 				log.info('Wrote {}, {} changes.'.format(dme, changes))
@@ -168,7 +173,7 @@ def Compile(serverState, no_restart=False):
 				if not os.path.isdir(map_outdir):
 					os.makedirs(map_outdir)
 			with log.info('Compiling...'):
-				stdout, stderr = cmd_output(['DreamMaker', dme], echo=True)
+				stdout, stderr = cmd_output([DREAMMAKER_EXE, dme], echo=True)
 				locked = False
 				if stdout or stderr:
 					skip_next_errors = 0
@@ -187,13 +192,18 @@ def Compile(serverState, no_restart=False):
 							errors += 1
 							if skip_next_errors > 0:
 								skip_next_errors -= 1
-								continue
-							send_nudge('COMPILE ERROR: {0}'.format(line))
+								continue 
 							log.error(line)
+							nudge='COMPILE ERROR: {0}'.format(line)
+							if errors <= 10:
+								continue
+							if errors == 10:
+								nudge += ' (10 errors occurred, hiding further errors.)'
+							send_nudge(nudge)
 						elif 'warning:' in line:
 							warnings += 1
 							log.warn(line)
-						else:
+						elif line.strip() != '':
 							log.info(line)
 					
 			if errors > 0:
@@ -219,7 +229,8 @@ def Compile(serverState, no_restart=False):
 		next_nudge = 'Update completed ({} warnings), and successfully compiled! Restarting...'.format(warnings)
 		waiting_for_next_commit = False
 		
-	updateConfig(currentBranch, config.get('git.game.remotename', 'origin'), currentCommit)
+	with os_utils.TimeExecution('Copy config'):
+		updateConfig()
 		
 	lastCommits['game'] = currentCommit
 
@@ -294,27 +305,26 @@ def checkForUpdates(serverState):
 	else:
 		PerformServerReadyCheck(serverState)
 		
-def updateConfig(branch, remote, commit): 
-	cfgPath = config.get('git.config.path')
-	gamePath = config.get('paths.run')
+def updateConfig(): 
+	cfgPath = os.path.abspath(config.get('git.config.path'))
+	gamePath = os.path.abspath(config.get('paths.run'))
+	gameConfigPath = os.path.join(gamePath,'config')
 	
 	# cmd(['cp', '-a', cfgPath, gamePath])
-	os_utils.copytree(config.get('git.patches.path'), config.get('paths.run'), ignore=['.git/', '.bak', 'mode.txt'], verbose=False)
+	os_utils.copytree(cfgPath, gameConfigPath, ignore=['.git/', '.bak', 'mode.txt'], verbose=True)
 
 	# Copy gamemode, if it exists.
-	botConfigSource = os.path.join(cfgPath, 'config', 'mode.txt')
+	botConfigSource = os.path.join(cfgPath, 'mode.txt')
 	botConfigDest = os.path.join(gamePath, 'data', 'mode.txt')
 	
 	if os.path.isfile(botConfigSource):
 		if os.path.isfile(botConfigDest):
 			os.remove(botConfigDest)
-			log.warn('rm {0}'.format(botConfigDest))
 		shutil.move(botConfigSource, botConfigDest)
-		log.warn('mv {0} {1}'.format(botConfigSource, botConfigDest))
 		
 	# Update MOTD
-	inputRules = os.path.join(config.get('git.config.path'), 'motd.txt')
-	outputRules = os.path.join(config.get('paths.run'), 'config', 'motd.txt')
+	inputRules = os.path.join(cfgPath, 'motd.txt')
+	outputRules = os.path.join(gamePath, 'config', 'motd.txt')
 	with open(inputRules, 'r') as template:
 		with open(outputRules, 'w') as motd:
 			for _line in template:
@@ -388,14 +398,17 @@ def decode_packet(packet):
 	return b''
        
 def findDD():
-	global dd_proc
+	global dd_proc, DREAMDAEMON_IMAGE
 	if dd_proc is None or dd_proc.is_running():
 		dd_proc = None
 		for proc in psutil.process_iter():
-			if proc.name() == 'DreamDaemon':
-				dd_proc = proc
-				log.info('Found DreamDaemon running as process #{}'.format(dd_proc.pid))
-				break
+			try:
+				if proc.name() == DREAMDAEMON_IMAGE:
+					dd_proc = proc
+					log.info('Found DreamDaemon running as process #{}'.format(dd_proc.pid))
+					break
+			except psutil.AccessDenied:
+				continue
 			
 def getDMB(ignore_mapvoting=False):
 	dme_filename = config.get('compile.dme', 'baystation12.dmb')
@@ -423,11 +436,11 @@ def restartServer():
 		'-trusted'
 	]
 	
-	if not config.get('monitor.threads', False):
+	if not config.get('monitor.threads', False) and platform.system() != 'Windows':
 		args += ['-threads', 'off']
 		
 	with QChdir(config.get('paths.run')):
-		dd_pid = cmd_daemonize(['DreamDaemon'] + args, critical=True)
+		cmd_daemonize([DREAMDAEMON_EXE] + args, critical=True)
 	
 def ping_server(request):
 	global last_response
@@ -524,16 +537,22 @@ firstRun = True
 lastCommits = {}
 lastResponse = {}
 dd_proc = None
-findDD()
 waiting_on_server_response = False
 waiting_for_next_commit = False
 
 MAX_FAILURES = config.get('monitor.max-fails')
 
 # Set up env first
-byond_base = config.get('paths.byond', '~/byond')
-byond_bin = os.path.join(byond_base, 'bin')
-byond_man = os.path.join(byond_base, 'man')
+byond_base = os.path.abspath(config.get('paths.byond', '~/byond'))
+byond_bin = os.path.abspath(os.path.join(byond_base, 'bin'))
+byond_man = os.path.abspath(os.path.join(byond_base, 'man'))
+
+is_posix = platform.system() != 'Windows'
+
+DREAMDAEMON_IMAGE = 'DreamDaemon' if is_posix else 'dreamdaemon.exe'
+DREAMDAEMON_EXE = 'DreamDaemon' if is_posix else os.path.join(byond_bin,'dreamdaemon.exe')
+
+DREAMMAKER_EXE = 'DreamMaker' if is_posix else os.path.join(byond_bin,'dm.exe')
 
 # Does the job of byondsetup.
 ENV.merge({
@@ -543,6 +562,8 @@ ENV.merge({
 	'LD_LIBRARY_PATH': ':'.join([byond_bin] + os.environ.get('LD_LIBRARY_PATH', '').split(':')),
 	'MANPATH':         ':'.join([byond_man] + os.environ.get('MANPATH', '').split(':'))
 })
+
+findDD()
 
 # Gather initial repo states.
 with log.info('Gathering git repository statuses...'):
@@ -580,6 +601,9 @@ for map_name, map_filename in map_list.items():
 		
 if need_compile: 
 	Compile(False, no_restart=True)
+
+with os_utils.TimeExecution('Copy config'):
+	updateConfig()
 
 waiting_on_server_response = os.path.isfile(os.path.join(config.get('paths.run'), 'data', 'UPDATE_READY.txt'))
 if waiting_on_server_response:
