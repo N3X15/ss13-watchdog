@@ -27,22 +27,23 @@ commands:
         'Metaclub':    'maps\\metaclub.dmm'
         'Deficiency':  'maps\\defficiency.dmm'
 git:
-  # Server configuration repository
-  config:
-    # Branch to use
-    branch: master
+  # The actual game code repo
+  game:
     # Repo URL (Ensure SSH key is generated if using SSH)
-    remote: git@git.nexisonline.net:vgstation/config.git
-    # Where to stage this before compile
-    path:   /home/gmod/byond/repos/config/
+    remote: https://github.com/d3athrow/vgstation13.git
     # If needed, you can also specify the name of the remote to use when pulling.
     # Default: "origin"
     #remotename: origin
-  # The actual game code repo
-  game:
+    # Branch to use
     branch: Bleeding-Edge
-    remote: https://github.com/d3athrow/vgstation13.git
+    # Where to stage this before compile
     path:   /home/gmod/byond/repos/game/
+  # Server configuration repository
+  # Comment out this block if you don't need it.
+  config:
+    branch: master
+    remote: git@git.nexisonline.net:vgstation/config.git
+    path:   /home/gmod/byond/repos/config/
   # Patches (used on /vg/ for security-related stuff and closed-source secrets)
   # This gets copied over the game repo's contents.
   # Comment out this block if you don't need it.
@@ -51,6 +52,7 @@ git:
     remote: git@git.nexisonline.net:vgstation/secrets.git
     path:   /home/gmod/byond/repos/patches/
 # NUDGE2
+# Comment out this block if you don't need it.
 nudge:
   # Identifier tag
   id: Main Server

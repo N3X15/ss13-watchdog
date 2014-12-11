@@ -229,8 +229,7 @@ def Compile(serverState, no_restart=False):
 		next_nudge = 'Update completed ({} warnings), and successfully compiled! Restarting...'.format(warnings)
 		waiting_for_next_commit = False
 		
-	with os_utils.TimeExecution('Copy config'):
-		updateConfig()
+	updateConfig()
 		
 	lastCommits['game'] = currentCommit
 
@@ -306,30 +305,32 @@ def checkForUpdates(serverState):
 		PerformServerReadyCheck(serverState)
 		
 def updateConfig(): 
-	cfgPath = os.path.abspath(config.get('git.config.path'))
-	gamePath = os.path.abspath(config.get('paths.run'))
-	gameConfigPath = os.path.join(gamePath,'config')
-	
-	# cmd(['cp', '-a', cfgPath, gamePath])
-	os_utils.copytree(cfgPath, gameConfigPath, ignore=['.git/', '.bak', 'mode.txt'], verbose=False)
-
-	# Copy gamemode, if it exists.
-	botConfigSource = os.path.join(cfgPath, 'mode.txt')
-	botConfigDest = os.path.join(gamePath, 'data', 'mode.txt')
-	
-	if os.path.isfile(botConfigSource):
-		if os.path.isfile(botConfigDest):
-			os.remove(botConfigDest)
-		shutil.move(botConfigSource, botConfigDest)
+	if config.get('git.config') is not None:
+		with os_utils.TimeExecution('Copy config'):
+			cfgPath = os.path.abspath(config.get('git.config.path'))
+			gamePath = os.path.abspath(config.get('paths.run'))
+			gameConfigPath = os.path.join(gamePath,'config')
+			
+			# cmd(['cp', '-a', cfgPath, gamePath])
+			os_utils.copytree(cfgPath, gameConfigPath, ignore=['.git/', '.bak', 'mode.txt'], verbose=False)
 		
-	# Update MOTD
-	inputRules = os.path.join(cfgPath, 'motd.txt')
-	outputRules = os.path.join(gamePath, 'config', 'motd.txt')
-	with open(inputRules, 'r') as template:
-		with open(outputRules, 'w') as motd:
-			for _line in template:
-				line = _line.format(GIT_BRANCH=config.get('git.game.branch', 'master'), GIT_REMOTE=config.get('git.game.remotename', 'origin'), GIT_COMMIT=config.get('git.game.commit', '???'))
-				motd.write(line)
+			# Copy gamemode, if it exists.
+			botConfigSource = os.path.join(cfgPath, 'mode.txt')
+			botConfigDest = os.path.join(gamePath, 'data', 'mode.txt')
+			
+			if os.path.isfile(botConfigSource):
+				if os.path.isfile(botConfigDest):
+					os.remove(botConfigDest)
+				shutil.move(botConfigSource, botConfigDest)
+				
+			# Update MOTD
+			inputRules = os.path.join(cfgPath, 'motd.txt')
+			outputRules = os.path.join(gamePath, 'config', 'motd.txt')
+			with open(inputRules, 'r') as template:
+				with open(outputRules, 'w') as motd:
+					for _line in template:
+						line = _line.format(GIT_BRANCH=config.get('git.game.branch', 'master'), GIT_REMOTE=config.get('git.game.remotename', 'origin'), GIT_COMMIT=config.get('git.game.commit', '???'))
+						motd.write(line)
 		
 def checkForUpdate(serverState, reponame, cfg):
 	global lastCommits
@@ -549,19 +550,21 @@ byond_man = os.path.abspath(os.path.join(byond_base, 'man'))
 
 is_posix = platform.system() != 'Windows'
 
+# Should probably make this configurable.
 DREAMDAEMON_IMAGE = 'DreamDaemon' if is_posix else 'dreamdaemon.exe'
 DREAMDAEMON_EXE = 'DreamDaemon' if is_posix else os.path.join(byond_bin,'dreamdaemon.exe')
 
 DREAMMAKER_EXE = 'DreamMaker' if is_posix else os.path.join(byond_bin,'dm.exe')
 
 # Does the job of byondsetup.
-ENV.merge({
-	'BYOND_SYSTEM': byond_base,
-	
-	'PATH':            ':'.join([byond_bin] + os.environ['PATH'].split(':')),
-	'LD_LIBRARY_PATH': ':'.join([byond_bin] + os.environ.get('LD_LIBRARY_PATH', '').split(':')),
-	'MANPATH':         ':'.join([byond_man] + os.environ.get('MANPATH', '').split(':'))
-})
+if is_posix:
+	ENV.merge({
+		'BYOND_SYSTEM': byond_base,
+		
+		'PATH':            ':'.join([byond_bin] + os.environ['PATH'].split(':')),
+		'LD_LIBRARY_PATH': ':'.join([byond_bin] + os.environ.get('LD_LIBRARY_PATH', '').split(':')),
+		'MANPATH':         ':'.join([byond_man] + os.environ.get('MANPATH', '').split(':'))
+	})
 
 findDD()
 
@@ -602,8 +605,7 @@ for map_name, map_filename in map_list.items():
 if need_compile: 
 	Compile(False, no_restart=True)
 
-with os_utils.TimeExecution('Copy config'):
-	updateConfig()
+updateConfig()
 
 waiting_on_server_response = os.path.isfile(os.path.join(config.get('paths.run'), 'data', 'UPDATE_READY.txt'))
 if waiting_on_server_response:
