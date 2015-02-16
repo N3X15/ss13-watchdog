@@ -25,6 +25,9 @@ from buildtools.bt_logging import IndentLogger
 class QChdir(Chdir):
 	def __init__(self, newdir):
 		Chdir.__init__(self, newdir, True)
+		
+REG_INCLUDE = re.compile(r'^#include "([^"]+)"$')
+REG_PATHSEP = re.compile(r'[\\\\/]')
 
 # @formatting:off
 default_config = {
@@ -86,7 +89,7 @@ config = Config('config.yml', default_config)
 last_response = {}
 
 def send_nudge(message):
-	if config.get('nudge',None) is None:
+	if config.get('nudge', None) is None:
 		return
 	try:
 		data = {}
@@ -104,6 +107,123 @@ def send_nudge(message):
 	except socket.error as e:
 		print(str(e))
 		return
+	
+def fix_path(path):
+	'''Standardize paths to use backslashes instead of os.sep.
+	   :param path str: Path to fix
+	'''
+	return REG_PATHSEP.sub('\\\\', path)
+	
+def patch_dme(RUN_PATH, PATCHES_PATH, GAME_PATH, map_find, map_filename, dme, map_outdir):
+	secret_config_default = {
+		'dme-patches':{
+			'auto-add':[
+				'__INCLUDES.dm'
+			],
+			'add':[],
+			'remove':[]
+		}
+	}
+	secret_config = secret_config_default
+	if PATCHES_PATH is not None:
+		secret_config = Config(os.path.join(PATCHES_PATH, 'patches.yml'), secret_config_default)
+	autoadd = secret_config['dme-patches']['auto-add']
+	addincludes = [fix_path(x) for x in secret_config['dme-patches']['add']]
+	removeincludes = [fix_path(x) for x in secret_config['dme-patches']['remove']]
+	dme_changed = False
+	if len(autoadd) > 0:
+		all_files = []
+		for root, dir, files in os.walk(GAME_PATH):
+			for file in files:
+				file = os.path.relpath(os.path.join(root, file), GAME_PATH)
+				basefn = os.path.basename(file)
+				file = fix_path(file)
+				if basefn in autoadd:
+					if file not in all_files: all_files.append(file)
+		for root, dir, files in os.walk(PATCHES_PATH):
+			for file in files:
+				file = os.path.relpath(os.path.join(root, file), PATCHES_PATH)
+				basefn = os.path.basename(file)
+				file = fix_path(file)
+				if basefn in autoadd:
+					if file not in all_files: all_files.append(file)
+		lines = []
+		origlines = []
+		includes = []
+		ln = 0
+		with log.info('Patching {}...'.format(dme)):
+			with open(dme, 'r') as orig:
+				origline = ''
+				line = ''
+				ln = 0
+				for line in orig:
+					ln += 1
+					line = line.strip()
+					
+					# Includes
+					m = REG_INCLUDE.match(line)
+					if m is not None:
+						includes += [fix_path(m.group(1))]
+					
+					lines += [line]
+				
+			changes = 0
+			newincludes = []
+			for include in includes:
+				originclude = include
+				if include in removeincludes:
+					log.info(' - #include "%s"', originclude)
+					changes += 1
+					continue
+				
+				# Find map
+				include, nchange = map_find.subn(map_filename, include)
+				if nchange > 0:
+					with log.info('Fixed map:'):
+						log.info(' - #include "%s"', originclude)
+						log.info(' + #include "%s"', include)
+					changes += 1
+				newincludes.append(include)
+			# Add new
+			for include in addincludes:
+				if include not in includes:
+					warning('Unable to find include %s.', include) 
+					continue
+				log.info(' + #include "%s"', include)
+				changes += 1
+				newincludes.append(include)
+				
+			# Sort
+			# newincludes.sort()
+			
+			fn, ext = os.path.splitext(dme)
+			new_dme = fn + '.mdme'
+			
+			with open(dme, 'r') as orig:
+				with open(new_dme, 'w') as new:
+					origline = ''
+					in_includes = False
+					line = ''
+					ln = 0
+					for line in orig:
+						ln += 1
+						origline = line = line.strip()
+						
+						if line == '// BEGIN_INCLUDE': 
+							in_includes = True
+							new.write(line + '\n')
+							for include in newincludes:
+								new.write('#include "{0}"\n'.format(include))
+						elif line == '// END_INCLUDE':
+							in_includes = False 
+						if not in_includes:
+							new.write(line + '\n')
+								
+			if os.path.isfile(dme):
+				os.remove(dme)
+			os.rename(new_dme, dme)
+		
+			log.info('Wrote {}, {} changes.'.format(dme, changes))
 	
 def Compile(serverState, no_restart=False):
 	global dd_proc
@@ -126,12 +246,24 @@ def Compile(serverState, no_restart=False):
 	
 	dme = config.get('commands.compile.dme', 'tgstation.dme')
 	
-	with os_utils.TimeExecution('Copy staging'):
-		os_utils.copytree(os.path.abspath(config.get('git.game.path')), os.path.abspath(config.get('paths.run')), ignore=['.git/', '.bak'], verbose=False)
+	GAME_PATH = os.path.abspath(config.get('git.game.path'))
+	RUN_PATH = os.path.abspath(config.get('paths.run'))
+	PATCHES_PATH = None
+	
+	clean_paths = [
+		# 'code',
+		'html',
+		'icons',
+		'maps', 		
+	]
+
+	with os_utils.TimeExecution('Copy staging: {} -> {}'.format(GAME_PATH, RUN_PATH)):
+		os_utils.copytree(GAME_PATH, RUN_PATH, ignore=['.git/', '.bak'], verbose=False, ignore_mtime=True)  # Always copy.
 					
 	if config.get('git.patches.path') is not None:
-		with os_utils.TimeExecution('Copy patches'):
-			os_utils.copytree(os.path.abspath(config.get('git.patches.path')), os.path.abspath(config.get('paths.run')), ignore=['.git/', '.bak'], verbose=False)
+		PATCHES_PATH = os.path.abspath(config.get('git.patches.path'))
+		with os_utils.TimeExecution('Copy patches: {} -> {}'.format(PATCHES_PATH, RUN_PATH)):
+			os_utils.copytree(PATCHES_PATH, RUN_PATH, ignore=['.git/', '.bak'], verbose=False, ignore_mtime=True)  # Always copy.
 	
 	map_find = re.compile('{}'.format(config.get('commands.compile.map-voting.match', None)))
 	map_list = config.get('commands.compile.map-voting.maps', {'':None})
@@ -139,30 +271,9 @@ def Compile(serverState, no_restart=False):
 		base_dmb = None
 		for map_name, map_filename in map_list.items():
 			map_outdir = None
-			if map_find is not None and map_filename is not None:
+			if (map_find is not None and map_filename is not None) or os.path.isfile(os.path.join(PATCHES_PATH, 'patches.yml')):
 				map_outdir = os.path.join(config.get('paths.run'), 'maps', 'voting', map_name)
-				with log.info('Patching {}...'.format(dme)):
-					fn, ext = os.path.splitext(dme)
-					new_dme = fn + '.mdme'
-					ln = 0
-					changes = 0
-					with open(dme, 'r') as orig:
-						with open(new_dme, 'w') as new:
-							for line in orig:
-								ln += 1
-								origline = line = line.strip()
-								line, nchange = map_find.subn(map_filename, line)
-								if nchange > 0:
-									log.info('Changed line #{}.'.format(ln))
-									log.info(' - '+origline)
-									log.info(' + '+line)
-									changes += 1
-								new.write(line + '\n')
-				if os.path.isfile(dme):
-					os.remove(dme)
-				os.rename(new_dme, dme)
-				
-				log.info('Wrote {}, {} changes.'.format(dme, changes))
+				patch_dme(RUN_PATH, PATCHES_PATH, GAME_PATH, map_find, map_filename, dme, map_outdir)
 		
 			# Compile
 			warnings = 0
@@ -172,7 +283,7 @@ def Compile(serverState, no_restart=False):
 				msg = 'Compiling for {}...'.format(map_name)
 				if not os.path.isdir(map_outdir):
 					os.makedirs(map_outdir)
-			with log.info('Compiling...'):
+			with log.info(msg):
 				stdout, stderr = cmd_output([DREAMMAKER_EXE, dme], echo=True)
 				locked = False
 				if stdout or stderr:
@@ -194,8 +305,8 @@ def Compile(serverState, no_restart=False):
 								skip_next_errors -= 1
 								continue 
 							log.error(line)
-							nudge='COMPILE ERROR: {0}'.format(line)
-							if errors <= 10:
+							nudge = 'COMPILE ERROR: {0}'.format(line)
+							if errors > 10:
 								continue
 							if errors == 10:
 								nudge += ' (10 errors occurred, hiding further errors.)'
@@ -221,8 +332,10 @@ def Compile(serverState, no_restart=False):
 				send_nudge('Completed updating {}...'.format(map_name))
 	
 		if base_dmb is not None:
-			shutil.copy2(base_dmb, config.get('compile.dme', 'baystation12.dmb'))
-			log.info('Copied {} to {}...'.format(base_dmb, config.get('compile.dme', 'baystation12.dmb')))
+			basefilename, ext = os.path.splitext(dme)
+			dmb = basefilename + '.dmb'
+			shutil.copy2(base_dmb, dmb)
+			log.info('Copied {} to {}...'.format(base_dmb, dmb))
 			
 	next_nudge = 'Update completed ({} warnings). Restarting...'.format(warnings)
 	if waiting_for_next_commit:
@@ -309,7 +422,7 @@ def updateConfig():
 		with os_utils.TimeExecution('Copy config'):
 			cfgPath = os.path.abspath(config.get('git.config.path'))
 			gamePath = os.path.abspath(config.get('paths.run'))
-			gameConfigPath = os.path.join(gamePath,'config')
+			gameConfigPath = os.path.join(gamePath, 'config')
 			
 			# cmd(['cp', '-a', cfgPath, gamePath])
 			os_utils.copytree(cfgPath, gameConfigPath, ignore=['.git/', '.bak', 'mode.txt'], verbose=False)
@@ -414,9 +527,9 @@ def findDD():
 def getDMB(ignore_mapvoting=False):
 	dme_filename = config.get('compile.dme', 'baystation12.dmb')
 	
-	#if config.get('commands.compile.map-voting.match', None) is not None and not ignore_mapvoting:
-	#	filename, ext = os.path.splitext(dme_filename)
-	#	dme_filename = filename + '.mdme.dmb'
+	# if config.get('commands.compile.map-voting.match', None) is not None and not ignore_mapvoting:
+	# 	filename, ext = os.path.splitext(dme_filename)
+	# 	dme_filename = filename + '.mdme.dmb'
 	return dme_filename
 			
 def restartServer():
@@ -552,9 +665,9 @@ is_posix = platform.system() != 'Windows'
 
 # Should probably make this configurable.
 DREAMDAEMON_IMAGE = 'DreamDaemon' if is_posix else 'dreamdaemon.exe'
-DREAMDAEMON_EXE = 'DreamDaemon' if is_posix else os.path.join(byond_bin,'dreamdaemon.exe')
+DREAMDAEMON_EXE = 'DreamDaemon' if is_posix else os.path.join(byond_bin, 'dreamdaemon.exe')
 
-DREAMMAKER_EXE = 'DreamMaker' if is_posix else os.path.join(byond_bin,'dm.exe')
+DREAMMAKER_EXE = 'DreamMaker' if is_posix else os.path.join(byond_bin, 'dm.exe')
 
 # Does the job of byondsetup.
 if is_posix:
@@ -585,7 +698,7 @@ checkForUpdates(True)
 dmb_filename = getDMB(ignore_mapvoting=True)
 dmb_filepath = os.path.join(config.get('paths.run'), dmb_filename)
 
-need_compile=False
+need_compile = False
 if not os.path.isfile(dmb_filepath):
 	msg = 'Main DMB ({}) missing!'.format(os.path.basename(dmb_filename))
 	log.warn(msg)
