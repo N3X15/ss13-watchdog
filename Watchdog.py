@@ -332,7 +332,7 @@ def Compile(serverState, no_restart=False):
                 waiting_for_next_commit = True
                 return
             elif map_outdir is not None:
-                output_file = os.path.join(map_outdir, config.get('compile.dme', 'baystation12.dmb'))
+                output_file = os.path.join(map_outdir, config.get('commands.compile.dme', 'baystation12.dmb').replace(".dme", ".dmb"))
                 log.info('Copying {} to {}...'.format(getDMB(), output_file))
                 shutil.move(getDMB(), output_file)
                 if base_dmb is None:
@@ -439,13 +439,17 @@ def updateConfig():
             os_utils.copytree(cfgPath, gameConfigPath, ignore=['.git/', '.bak', 'mode.txt'], verbose=False)
 
             # Copy gamemode, if it exists.
-            botConfigSource = os.path.join(cfgPath, 'mode.txt')
-            botConfigDest = os.path.join(gamePath, 'data', 'mode.txt')
+            gamemodeSrc = os.path.join(cfgPath, 'mode.txt')
+            gamemodeDest = os.path.join(gamePath, 'data', 'mode.txt')
 
-            if os.path.isfile(botConfigSource):
-                if os.path.isfile(botConfigDest):
-                    os.remove(botConfigDest)
-                shutil.move(botConfigSource, botConfigDest)
+            if os.path.isfile(gamemodeSrc):
+                if os.path.isfile(gamemodeDest):
+                    os.remove(gamemodeDest)
+                    log.info('rm %s', gamemodeDest)
+                shutil.copy2(gamemodeSrc, gamemodeDest)
+                log.info('cp %s %s', gamemodeSrc, gamemodeDest)
+            else:
+                log.warn('Unable to find gamemode file "%s"', gamemodeSrc)
 
             # Update MOTD
             inputRules = os.path.join(cfgPath, 'motd.txt')
@@ -542,7 +546,7 @@ def findDD():
 
 
 def getDMB(ignore_mapvoting=False):
-    dme_filename = config.get('compile.dme', 'baystation12.dmb')
+    dme_filename = config.get('commands.compile.dme', 'baystation12.dme').replace(".dme", ".dmb")
 
     # if config.get('commands.compile.map-voting.match', None) is not None and not ignore_mapvoting:
     # 	filename, ext = os.path.splitext(dme_filename)
