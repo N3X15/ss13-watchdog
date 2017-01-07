@@ -22,6 +22,9 @@ from buildtools.wrapper import Git
 script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(script_dir, 'lib', 'buildtools'))
 
+chosen_map = ""
+compiling = False
+missing_maps = []
 
 
 class QChdir(Chdir):
@@ -29,54 +32,52 @@ class QChdir(Chdir):
     def __init__(self, newdir):
         Chdir.__init__(self, newdir, True)
 
-REG_INCLUDE = re.compile(r'^#include "([^"]+)"$')
-REG_PATHSEP = re.compile(r'[\\\\/]')
-
 # @formatting:off
 default_config = {
     'monitor': {
         'ip': '127.0.0.1',
         'port': 7777,
-        'timeout': 30.0,
+        'timeout': 90.0,
         'max-fails': 3,
         'wait-for-ready': True,
         'threads': False
     },
     'commands': {
         'compile': {
-            'dme': 'baystation12.dme',
+            'dme': 'vgstation13.dme',
             'map-voting': {
-                'match': 'maps[\\/]([a-z]+).dmm',
+                'match': 'maps[\\/]([a-z]+).dm',
                 'maps': {
-                    'Box Station': 'maps\tgstation.dmm',
-                    'Metaclub': 'maps\metaclub.dmm',
-                    'Deficiency': 'maps\defficiency.dmm',
+                    'Box Station': 'maps\tgstation.dm',
+                    'Metaclub':    'maps\metaclub.dm',
+                    #'Defficiency':  'maps\defficiency.dm',
+                    'Taxi Station':  'maps\taxistation.dm',
                 }
             }
         },
     },
     'paths': {
-        'byond': '~/byond',
-        'stats': 'stats.json',
-        'crashlog': '~/byond/crashlogs/',
-        'run': '~/byond/tgstation/',
+        'byond':      '~/byond',
+        'stats':      'stats.json',
+        'crashlog':   '~/byond/crashlogs/',
+        'run':        '~/byond/tgstation/',
     },
     'git': {
         'game': {
-            'remote': 'https://github.com/d3athrow/vgstation13.git',
+            'remote': 'git@origin.com:vgstation/vgstation.git',
             'branch': 'Bleeding-Edge',
-            'path': '~/byond/repos/game/',
+            'path':   './repos/game',
         },
         'patches': {
             'remote': 'git@git.nexisonline.net:vgstation/secrets.git',
             'branch': 'master',
-            'path': '~/byond/repos/config/',
+            'path':   '~/byond/repos/patches/',
         },
-        'config': {
-            'remote': 'git@git.nexisonline.net:vgstation/config.git',
-            'branch': 'master',
-            'path': '~/byond/repos/patches/',
-        },
+        #'config': {
+        #		'remote': 'git@git.nexisonline.net:vgstation/config.git',
+        #		'branch': 'master',
+        #		'path':   '~/byond/repos/config/',
+        #	},
     },
     'nudge': {
         'id': 'Test Server',
@@ -90,6 +91,8 @@ default_config = {
 config = Config('config.yml', default_config)
 
 last_response = {}
+
+compile_interrupted = False
 
 
 def send_nudge(message):
@@ -113,177 +116,78 @@ def send_nudge(message):
         return
 
 
-def fix_path(path):
-    '''Standardize paths to use backslashes instead of os.sep.
-       :param path str: Path to fix
-    '''
-    return REG_PATHSEP.sub('\\\\', path)
-
-
-def patch_dme(RUN_PATH, PATCHES_PATH, GAME_PATH, map_find, map_filename, dme, map_outdir):
-    secret_config_default = {
-        'dme-patches': {
-            'auto-add': [
-                '__INCLUDES.dm'
-            ],
-            'add': [],
-            'remove': []
-        }
-    }
-    secret_config = secret_config_default
-    if PATCHES_PATH is not None:
-        secret_config = Config(os.path.join(PATCHES_PATH, 'patches.yml'), secret_config_default)
-    autoadd = secret_config['dme-patches']['auto-add']
-    addincludes = [fix_path(x) for x in secret_config['dme-patches']['add']]
-    removeincludes = [fix_path(x) for x in secret_config['dme-patches']['remove']]
-    dme_changed = False
-    if len(autoadd) > 0:
-        all_files = []
-        for root, dir, files in os.walk(GAME_PATH):
-            for file in files:
-                file = os.path.relpath(os.path.join(root, file), GAME_PATH)
-                basefn = os.path.basename(file)
-                file = fix_path(file)
-                if basefn in autoadd:
-                    if file not in all_files:
-                        all_files.append(file)
-        for root, dir, files in os.walk(PATCHES_PATH):
-            for file in files:
-                file = os.path.relpath(os.path.join(root, file), PATCHES_PATH)
-                basefn = os.path.basename(file)
-                file = fix_path(file)
-                if basefn in autoadd:
-                    if file not in all_files:
-                        all_files.append(file)
-        lines = []
-        origlines = []
-        includes = []
-        ln = 0
-        with log.info('Patching {}...'.format(dme)):
-            with open(dme, 'r') as orig:
-                origline = ''
-                line = ''
-                ln = 0
-                for line in orig:
-                    ln += 1
-                    line = line.strip()
-
-                    # Includes
-                    m = REG_INCLUDE.match(line)
-                    if m is not None:
-                        includes += [fix_path(m.group(1))]
-
-                    lines += [line]
-
-            changes = 0
-            newincludes = []
-            for include in includes:
-                originclude = include
-                if include in removeincludes:
-                    log.info(' - #include "%s"', originclude)
-                    changes += 1
-                    continue
-
-                # Find map
-                include, nchange = map_find.subn(map_filename, include)
-                if nchange > 0:
-                    with log.info('Fixed map:'):
-                        log.info(' - #include "%s"', originclude)
-                        log.info(' + #include "%s"', include)
-                    changes += 1
-                newincludes.append(include)
-            # Add new
-            for include in addincludes:
-                if include not in includes:
-                    warning('Unable to find include %s.', include)
-                    continue
-                log.info(' + #include "%s"', include)
-                changes += 1
-                newincludes.append(include)
-
-            # Sort
-            # newincludes.sort()
-
-            fn, ext = os.path.splitext(dme)
-            new_dme = fn + '.mdme'
-
-            with open(dme, 'r') as orig:
-                with open(new_dme, 'w') as new:
-                    origline = ''
-                    in_includes = False
-                    line = ''
-                    ln = 0
-                    for line in orig:
-                        ln += 1
-                        origline = line = line.strip()
-
-                        if line == '// BEGIN_INCLUDE':
-                            in_includes = True
-                            new.write(line + '\n')
-                            for include in newincludes:
-                                new.write('#include "{0}"\n'.format(include))
-                        elif line == '// END_INCLUDE':
-                            in_includes = False
-                        if not in_includes:
-                            new.write(line + '\n')
-
-            if os.path.isfile(dme):
-                os.remove(dme)
-            os.rename(new_dme, dme)
-
-            log.info('Wrote {}, {} changes.'.format(dme, changes))
-
-
 def Compile(serverState, no_restart=False):
     global dd_proc
     global waiting_for_next_commit
+    global chosen_map
+    global compiling
+    global compile_interrupted
 
+    if compiling:
+        return False
+    compiling = True
+    compile_interrupted = False
     with QChdir(config.get('git.game.path')):
         currentCommit = Git.GetCommit()
         currentBranch = Git.GetBranch()
 
     log.info('Code is at {0} ({1}).  Triggering compile.'.format(currentCommit, currentBranch))
 
-    for process in psutil.process_iter():
-        try:
-            if process.name() == DREAMDAEMON_IMAGE and process.is_running():
-                log.info('Killing DreamDaemon PID#{}...'.format(process.pid))
-                process.kill()
-                process.wait()
-                time.sleep(5)
-        except psutil.AccessDenied:
-            continue
+    # for process in psutil.process_iter():
+    #	try:
+    #		if process.name() == DREAMDAEMON_IMAGE and process.is_running():
+    #			log.info('Killing DreamDaemon PID#{}...'.format(process.pid))
+    #			process.kill()
+    #			process.wait()
+    #	except psutil.AccessDenied:
+    #		continue
 
     dme = config.get('commands.compile.dme', 'tgstation.dme')
-
-    GAME_PATH = os.path.abspath(config.get('git.game.path'))
-    RUN_PATH = os.path.abspath(config.get('paths.run'))
-    PATCHES_PATH = None
-
-    clean_paths = [
-        # 'code',
-        'html',
-        'icons',
-        'maps',
-    ]
-
-    with os_utils.TimeExecution('Copy staging: {} -> {}'.format(GAME_PATH, RUN_PATH)):
-        os_utils.copytree(GAME_PATH, RUN_PATH, ignore=['.git/', '.bak'], verbose=False, ignore_mtime=True)  # Always copy.
+    # with os_utils.TimeExecution('Making Changelogs'):
+    #subprocess.call("c:\\users\\ss13.WIN-P0RHEL3A9QS\\desktop\\makechangelog.bat", shell=True)
 
     if config.get('git.patches.path') is not None:
-        PATCHES_PATH = os.path.abspath(config.get('git.patches.path'))
-        with os_utils.TimeExecution('Copy patches: {} -> {}'.format(PATCHES_PATH, RUN_PATH)):
-            os_utils.copytree(PATCHES_PATH, RUN_PATH, ignore=['.git/', '.bak'], verbose=False, ignore_mtime=True)  # Always copy.
+        with os_utils.TimeExecution('Copy patches'):
+            os_utils.copytree(os.path.abspath(config.get('git.patches.path')), os.path.abspath(config.get('git.game.path')), ignore=['.git/', '.bak'], verbose=True, ignore_mtime=True)
 
     map_find = re.compile('{}'.format(config.get('commands.compile.map-voting.match', None)))
     map_list = config.get('commands.compile.map-voting.maps', {'': None})
-    with QChdir(config.get('paths.run')):
+    with QChdir(config.get('git.game.path')):
+        #zippity = os.path.join(config.get('git.game.path'), 'zippitydooda.py')
+        #subprocess.call('python {}'.format(zippity), shell=True)
         base_dmb = None
         for map_name, map_filename in map_list.items():
             map_outdir = None
-            if (map_find is not None and map_filename is not None) or os.path.isfile(os.path.join(PATCHES_PATH, 'patches.yml')):
-                map_outdir = os.path.join(config.get('paths.run'), 'maps', 'voting', map_name)
-                patch_dme(RUN_PATH, PATCHES_PATH, GAME_PATH, map_find, map_filename, dme, map_outdir)
+            # if(len(missing_maps)):
+            # if(missing_maps.count(map_name) == 0):
+            #log.info("Skipping map {} for compiling.".format(map_name))
+            #send_nudge("Skipping map {} for compiling.".format(map_name))
+            # continue
+
+            if map_find is not None and map_filename is not None:
+                map_outdir = os.path.join(config.get('git.game.path'), 'maps', 'voting', map_name)
+                with log.info('Patching {}...'.format(dme)):
+                    fn, ext = os.path.splitext(dme)
+                    new_dme = fn + '.mdme'
+                    ln = 0
+                    changes = 0
+                    with open(dme, 'r') as orig:
+                        with open(new_dme, 'w') as new:
+                            for line in orig:
+                                ln += 1
+                                origline = line = line.strip()
+                                line, nchange = map_find.subn(map_filename, line)
+                                if nchange > 0:
+                                    log.info('Changed line #{}.'.format(ln))
+                                    log.info(' - ' + origline)
+                                    log.info(' + ' + line)
+                                    changes += 1
+                                new.write(line + '\n')
+                if os.path.isfile(dme):
+                    os.remove(dme)
+                os.rename(new_dme, dme)
+
+                log.info('Wrote {}, {} changes.'.format(dme, changes))
 
             # Compile
             warnings = 0
@@ -293,7 +197,7 @@ def Compile(serverState, no_restart=False):
                 msg = 'Compiling for {}...'.format(map_name)
                 if not os.path.isdir(map_outdir):
                     os.makedirs(map_outdir)
-            with log.info(msg):
+            with log.info('Compiling...'):
                 stdout, stderr = cmd_output([DREAMMAKER_EXE, dme], echo=True)
                 locked = False
                 if stdout or stderr:
@@ -332,27 +236,44 @@ def Compile(serverState, no_restart=False):
                 send_nudge(msg)
                 log.warn(msg)
                 waiting_for_next_commit = True
-                return
+                compiling = False
+                compile_interrupted = False
+                return False
             elif map_outdir is not None:
-                output_file = os.path.join(map_outdir, config.get('commands.compile.dme', 'baystation12.dmb').replace(".dme", ".dmb"))
+                projectname, ext = os.path.splitext(os.path.basename(dme))
+                dmbfilename = projectname + '.dmb'
+                output_file = os.path.join(os.path.abspath(map_outdir), dmbfilename)
                 log.info('Copying {} to {}...'.format(getDMB(), output_file))
                 shutil.move(getDMB(), output_file)
                 if base_dmb is None:
                     base_dmb = output_file
                 send_nudge('Completed updating {}...'.format(map_name))
-
-        if base_dmb is not None:
-            basefilename, ext = os.path.splitext(dme)
-            dmb = basefilename + '.dmb'
-            shutil.copy2(base_dmb, dmb)
-            log.info('Copied {} to {}...'.format(base_dmb, dmb))
-
-    next_nudge = 'Update completed ({} warnings). Restarting...'.format(warnings)
+            for reponame, cfg in config.cfg['git'].items():
+                if checkForUpdate(serverState, reponame, cfg):
+                    compile_interrupted = True
+                    compiling = False
+                    send_nudge('Received new commit during compile sequence, aborting and restarting...')
+                    log.info('Interrupted by new commit...')
+                    return False
+    next_nudge = 'Update completed ({} warnings). Waiting for server to die...'.format(warnings)
+    missing_maps[:] = []
     if waiting_for_next_commit:
-        next_nudge = 'Update completed ({} warnings), and successfully compiled! Restarting...'.format(warnings)
+        next_nudge = 'Update completed ({} warnings), and successfully compiled! Waiting for server to die...'.format(warnings)
         waiting_for_next_commit = False
+    with QChdir(config.get('git.game.path')):
+        map_config = config.get('commands.compile.map-voting.maps', {'', None})
+        if map_config is not None:
+            if chosen_map == "" or chosen_map is None:
+                chosen_map = 'Box Station'
+            if chosen_map != "" and chosen_map is not None:
+                dme = config.get('commands.compile.dme', 'tgstation.dme')
+                projectname, ext = os.path.splitext(os.path.basename(dme))
+                dmbfilename = projectname + '.dmb'
+                base_dmb = os.path.join(os.path.abspath(os.path.join(config.get('git.game.path'), 'maps', 'voting', chosen_map)), dmbfilename)
+                shutil.copy2(base_dmb, dmbfilename)
 
-    updateConfig()
+    # with os_utils.TimeExecution('Copy config'):
+        # updateConfig()
 
     lastCommits['game'] = currentCommit
 
@@ -362,14 +283,17 @@ def Compile(serverState, no_restart=False):
 
     # Recheck in a bit to be sure
     lastState = False
-
-    if not no_restart:
-        restartServer()
+    compiling = False
+    compile_interrupted = False
+    # if not no_restart:
+    # restartServer()
+    return True
 
 
 def PerformServerReadyCheck(serverState):
     global waiting_on_server_response
     global last_response
+    global chosen_map
     if not waiting_on_server_response:
         return
 
@@ -380,8 +304,11 @@ def PerformServerReadyCheck(serverState):
     updatereadyfile = os.path.join(config.get('paths.run'), 'data', 'UPDATE_READY.txt')
     serverreadyfile = os.path.join(config.get('paths.run'), 'data', 'SERVER_READY.txt')
     srf_exists = os.path.isfile(serverreadyfile)
+    if srf_exists:
+        log.warning("server ready file exists...")
     if not srf_exists and 'players' in last_response:
         srf_exists = last_response['players'] == 0
+        log.info("ready file does not exist, player count is " + last_response['players'])
     nudgemsg = "Server has "
     if (srf_exists):
         nudgemsg += "sent the READY signal."
@@ -391,25 +318,110 @@ def PerformServerReadyCheck(serverState):
         send_nudge(nudgemsg + ' Now recompiling.')
         waiting_on_server_response = False
         if srf_exists:
+            file = open(serverreadyfile, 'r')
+            chosen_map = file.readline().strip()
+            log.warning("chosen map is " + chosen_map)
+            file.close()
             os.remove(serverreadyfile)
         if os.path.isfile(updatereadyfile):
             os.remove(updatereadyfile)
-        Compile(serverState)
+        CopyBinaries(serverState)
 
 
-def checkForUpdates(serverState):
+def CopyBinaries(serverState):
+    global compiling
+    global chosen_map
     global lastCommits
     global waiting_on_server_response
     global waiting_for_next_commit
     global last_response
+
+    if compiling:
+        send_nudge('Waiting for compile to finish...')
+        log.info('Waiting for compile to finish...')
+        while compiling:
+            time.sleep(50)
+    next_nudge = ""
+    send_nudge('Copying updated files over.')
+    log.info('Copying updated files over.')
+    for process in psutil.process_iter():
+        try:
+            if process.name() == DREAMDAEMON_IMAGE and process.is_running():
+                log.info('Killing DreamDaemon PID#{}...'.format(process.pid))
+                process.kill()
+                process.wait()
+        except:
+            continue
+
+    subprocess.call("taskkill /F /IM DreamDaemon.exe")
+    rsc_path = os.path.join(os.path.abspath(config.get('paths.run')), 'vgstation13.rsc')
+    iteration = 0
+    while os.path.isfile(rsc_path):
+        if iteration > 3:
+            send_nudge('Unable to remove dirty RSC, panic')
+            log.warning('Unable to remove dirty RSC, panic')
+            sys.exit()
+        iteration += 1
+        os.remove(rsc_path)
+        if not os.path.isfile(rsc_path):
+            send_nudge('Removed Dirty RSC')
+            log.info('Removed Dirty RSC')
+        else:
+            send_nudge('Could not remove dirty RSC, trying again in a few seconds...')
+            log.warning('Could not remove dirty RSC, trying again in a few seconds...')
+            sleep(5)
+    folder = os.path.join(os.path.abspath(config.get('paths.run')), 'rsc')
+    try:
+        for the_file in os.listdir(folder):
+            file_path = os.path.join(folder, the_file)
+            try:
+                if os.path.isfile(file_path) and file_path.endswith('.zip'):
+                    os.unlink(file_path)
+            except:
+                continue
+    except:
+        log.warning('exception occurred in copying')
+    with os_utils.TimeExecution('Copy staging from {} to {}'.format(os.path.abspath(config.get('git.game.path')), os.path.abspath(config.get('paths.run')))):
+        os_utils.copytree(os.path.abspath(config.get('git.game.path')), os.path.abspath(config.get('paths.run')), ignore=['.git/', '.bak'], verbose=True)
+    with QChdir(config.get('paths.run')):
+        map_config = config.get('commands.compile.map-voting.maps', {'', None})
+        if map_config is not None:
+            if chosen_map == "" or chosen_map is None:
+                chosen_map = 'Box Station'
+            if chosen_map != "" and chosen_map is not None:
+                dme = config.get('commands.compile.dme', 'tgstation.dme')
+                projectname, ext = os.path.splitext(os.path.basename(dme))
+                dmbfilename = projectname + '.dmb'
+                base_dmb = os.path.join(os.path.abspath(os.path.join(config.get('paths.run'), 'maps', 'voting', chosen_map)), dmbfilename)
+                shutil.copy2(base_dmb, dmbfilename)
+                log.info('Copied {} to {}...'.format(base_dmb, dmbfilename))
+        if chosen_map != "":
+            next_nudge += 'New map is {}'.format(chosen_map)
+        if next_nudge != "" and next_nudge is not None:
+            send_nudge(next_nudge)
+            log.info(next_nudge)
+    restartServer()
+
+
+def checkForUpdates(serverState, forced=False):
+    global lastCommits
+    global waiting_on_server_response
+    global waiting_for_next_commit
+    global last_response
+    global compiling
+    global need_binary
+    global compile_interrupted
 
     updated = False
     for reponame, cfg in config.cfg['git'].items():
         if checkForUpdate(serverState, reponame, cfg):
             updated = True
 
-    if updated:
-        if config.get('monitor.wait-for-ready', True) and not waiting_for_next_commit:
+    if updated or forced or compile_interrupted:
+        success = Compile(serverState)
+        if need_binary or compile_interrupted or not success:
+            return
+        if config.get('monitor.wait-for-ready', True) and not compiling and not waiting_for_next_commit:
             # if not waiting_on_server_response:
             waiting_on_server_response = True
             log.info('Waiting for server to exit.')
@@ -424,43 +436,43 @@ def checkForUpdates(serverState):
 
             PerformServerReadyCheck(serverState)
             return
-        else:
-            Compile(serverState)
+        elif not waiting_for_next_commit:
+            log.info('not compiling and not going to wait for server or commit')
+            CopyBinaries(serverState)
+            return
+        elif forced and not serverState:
+            PerformServerReadyCheck(serverState)
     else:
+        if need_binary:
+            return
         PerformServerReadyCheck(serverState)
 
 
 def updateConfig():
-    if config.get('git.config') is not None:
-        with os_utils.TimeExecution('Copy config'):
-            cfgPath = os.path.abspath(config.get('git.config.path'))
-            gamePath = os.path.abspath(config.get('paths.run'))
-            gameConfigPath = os.path.join(gamePath, 'config')
+    cfgPath = os.path.abspath(config.get('git.config.path'))
+    gamePath = os.path.abspath(config.get('paths.run'))
+    gameConfigPath = os.path.join(gamePath, 'config')
 
-            # cmd(['cp', '-a', cfgPath, gamePath])
-            os_utils.copytree(cfgPath, gameConfigPath, ignore=['.git/', '.bak', 'mode.txt'], verbose=False)
+    # cmd(['cp', '-a', cfgPath, gamePath])
+    os_utils.copytree(cfgPath, gameConfigPath, ignore=['.git/', '.bak', 'mode.txt'], verbose=False)
 
-            # Copy gamemode, if it exists.
-            gamemodeSrc = os.path.join(cfgPath, 'mode.txt')
-            gamemodeDest = os.path.join(gamePath, 'data', 'mode.txt')
+    # Copy gamemode, if it exists.
+    botConfigSource = os.path.join(cfgPath, 'mode.txt')
+    botConfigDest = os.path.join(gamePath, 'data', 'mode.txt')
 
-            if os.path.isfile(gamemodeSrc):
-                if os.path.isfile(gamemodeDest):
-                    os.remove(gamemodeDest)
-                    log.info('rm %s', gamemodeDest)
-                shutil.copy2(gamemodeSrc, gamemodeDest)
-                log.info('cp %s %s', gamemodeSrc, gamemodeDest)
-            else:
-                log.warn('Unable to find gamemode file "%s"', gamemodeSrc)
+    if os.path.isfile(botConfigSource):
+        if os.path.isfile(botConfigDest):
+            os.remove(botConfigDest)
+        shutil.move(botConfigSource, botConfigDest)
 
-            # Update MOTD
-            inputRules = os.path.join(cfgPath, 'motd.txt')
-            outputRules = os.path.join(gamePath, 'config', 'motd.txt')
-            with open(inputRules, 'r') as template:
-                with open(outputRules, 'w') as motd:
-                    for _line in template:
-                        line = _line.format(GIT_BRANCH=config.get('git.game.branch', 'master'), GIT_REMOTE=config.get('git.game.remotename', 'origin'), GIT_COMMIT=config.get('git.game.commit', '???'))
-                        motd.write(line)
+    # Update MOTD
+    #inputRules = os.path.join(cfgPath, 'motd.txt')
+    #outputRules = os.path.join(gamePath, 'config', 'motd.txt')
+    # with open(inputRules, 'r') as template:
+    #	with open(outputRules, 'w') as motd:
+    #		for _line in template:
+    #			line = _line.format(GIT_BRANCH=config.get('git.game.branch', 'master'), GIT_REMOTE=config.get('git.game.remotename', 'origin'), GIT_COMMIT=config.get('git.game.commit', '???'))
+    #			motd.write(line)
 
 
 def checkForUpdate(serverState, reponame, cfg):
@@ -468,7 +480,7 @@ def checkForUpdate(serverState, reponame, cfg):
 
     remote_uri = cfg['remote']
     remote_name = cfg.get('remotename', 'origin')
-    branch = cfg.get('branch', 'master')
+    branch = cfg.get('branch', 'Bleeding-Edge')
     dest = cfg['path']
 
     changed = False
@@ -478,11 +490,39 @@ def checkForUpdate(serverState, reponame, cfg):
         changed = True
 
     with QChdir(dest):
+        log.info(dest)
         # subprocess.call('git pull -q -s recursive -X theirs {0} {1}'.format(GIT_REMOTE,GIT_BRANCH),shell=True)
-        cmd(['git', 'fetch', '-q', remote_name])
+        with log.info('Fetching changes for ' + remote_name):
+            #os.system("git fetch -q " + remote_name)
+            cmd_output(['git', 'fetch', '-q', '{0}'.format(remote_name)], echo=True)
+            #subprocess.call('git fetch -q {0}'.format(remote_name), shell=True)
+
+        #cmd(['git', 'fetch', '-q', remote_name])
         # cmd(['git', 'clean', '-fdx', '{0}/{1}'.format(remote_name, branch)])
-        # cmd(['git', 'reset', '--hard', '{0}/{1}'.format(remote_name, branch)])
-        cmd(['git', 'checkout', '-q', '{0}/{1}'.format(remote_name, branch)])
+        #cmd(['git', 'reset', '--hard', '{0}/{1}'.format(remote_name, branch)])
+
+        checkout_tries = 1
+        need_checkout = True
+        while(need_checkout and checkout_tries < 3):
+            #subprocess.call('git checkout -q {0}/{1}'.format(remote_name,branch), shell=True)
+            #cmd(['git', 'checkout', '-q', '{0}/{1}'.format(remote_name, branch)])
+            with log.info('Checking out ' + branch):
+                stdout, stderr = cmd_output(['git', 'checkout', '-q', '{0}/{1}'.format(remote_name, branch)], echo=True)
+                locked = False
+                if stdout or stderr:
+
+                    for line in (stdout + stderr).split('\n'):
+
+                        line = line.strip()
+                        if line.startswith('error:') and line.endswith('overwritten by checkout:'):
+                            cmd_output(['git', 'clean', '-f', '-d'], echo=True)
+                            cmd_output(['git', 'reset', '--hard', '{0}/{1}'.format(remote_name, branch)], echo=True)
+                            break
+                need_checkout = False
+            log.info("{0} and {1} tries".format(need_checkout, checkout_tries))
+        if(need_checkout):
+            send_nudge('Attempt at checking out ' + remote_name + '/' + branch + 'failed with too many tries.')
+            return
         currentCommit = Git.GetCommit()
         currentBranch = Git.GetBranch()
         config['git'][reponame]['commit'] = currentCommit
@@ -491,9 +531,36 @@ def checkForUpdate(serverState, reponame, cfg):
                 msg = '({reponame}) Updating server to {GIT_REMOTE}/{GIT_COMMIT}!'.format(reponame=reponame, GIT_REMOTE=remote_name, GIT_COMMIT=currentCommit)
                 log.info(msg)
                 send_nudge(msg)
-            cmd(['git', 'reset', '--hard', '{0}/{1}'.format(remote_name, branch)])
+            stdout, stderr = cmd_output(['git', 'clean', '-f', '-d'], echo=True)
+            #cmd(['git', 'reset', '--hard', '{0}/{1}'.format(remote_name, branch)])
+            if stdout or stderr:
+                skip_next_errors = 0
+
+                for line in (stdout + stderr).split('\n'):
+
+                    line = line.strip()
+                stdout, stderr = cmd_output(['git', 'reset', '--hard', '{0}/{1}'.format(remote_name, branch)], echo=True)
+            #cmd(['git', 'reset', '--hard', '{0}/{1}'.format(remote_name, branch)])
+            if stdout or stderr:
+                skip_next_errors = 0
+
+                for line in (stdout + stderr).split('\n'):
+
+                    line = line.strip()
+                    log.info(line)
+            stdout, stderr = cmd_output(['git', 'clean', '-f', '-d'], echo=True)
+            #cmd(['git', 'reset', '--hard', '{0}/{1}'.format(remote_name, branch)])
+            if stdout or stderr:
+                skip_next_errors = 0
+
+                for line in (stdout + stderr).split('\n'):
+
+                    line = line.strip()
+            #cmd(['git', 'clean', '-f', '-d'])
             changed = True
             lastCommits[reponame] = currentCommit
+            cmd_output(['git push -u TEMPORAARY Bleeding-Edge'])
+            # git push -u TEMPORAARY Bleeding-Edge
     return changed
 
 # Return True for success, False otherwise.
@@ -504,7 +571,7 @@ def open_socket():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect((config.get('monitor.ip'), config.get('monitor.port')))
     # 30-second timeout
-    s.settimeout(config.get('monitor.timeout', 30.0))
+    s.settimeout(config.get('monitor.timeout', 90.0))
     return s
 
 # Snippet below from http://pastebin.com/TGhPBPGp
@@ -548,11 +615,11 @@ def findDD():
 
 
 def getDMB(ignore_mapvoting=False):
-    dme_filename = config.get('commands.compile.dme', 'baystation12.dme').replace(".dme", ".dmb")
+    dme_filename = config.get('compile.dme', 'vgstation13.dmb')
 
     # if config.get('commands.compile.map-voting.match', None) is not None and not ignore_mapvoting:
-    # 	filename, ext = os.path.splitext(dme_filename)
-    # 	dme_filename = filename + '.mdme.dmb'
+    #	filename, ext = os.path.splitext(dme_filename)
+    #	dme_filename = filename + '.mdme.dmb'
     return dme_filename
 
 
@@ -560,30 +627,32 @@ def restartServer():
     global dd_proc
     findDD()
     if dd_proc is not None and dd_proc.is_running():
-        dd_proc.kill()
-        dd_proc.wait()
+        try:
+            dd_proc.kill()
+        except:
+            log.warn('Dream Daemon process unable to be closed')
         dd_proc = None
         log.warn('DreamDaemon still running, process killed.')
         send_nudge('DreamDaemon still running, process killed.')
-        time.sleep(5)
 
-    dme_filename = getDMB(ignore_mapvoting=True)
+    #dme_filename = getDMB(ignore_mapvoting=True)
 
-    # DreamDaemon baystation12 1336 -trusted -threads off
-    args = [
-        dme_filename,
-        config.get('monitor.port', 7777),
-        '-trusted'
-    ]
+    # DreamDaemon vgstation13 1336 -trusted -threads off
+    # args = [
+    #	dme_filename,
+    #	config.get('monitor.port', 7777),
+    #	'-trusted'
+    #]
 
-    if not config.get('monitor.threads', False) and platform.system() != 'Windows':
-        args += ['-threads', 'off']
+    # if not config.get('monitor.threads', False) and platform.system() != 'Windows':
+    #	args += ['-threads', 'off']
 
-    with QChdir(config.get('paths.run')):
-        cmd_daemonize([DREAMDAEMON_EXE] + args, critical=True)
+    # with QChdir(config.get('paths.run')):
+        #cmd_daemonize(['dreamdaemon c:\\users\\ss13.WIN-P0RHEL3A9QS\\desktop\\vgstation13-testing\\vgstation13.dmb 7777 -trusted'], echo=True, critical=True)
+    subprocess.call("C:\\Users\\ss13.WIN-P0RHEL3A9QS\\Desktop\\start-testing.bat", shell=True)
 
 
-def ping_server(request):
+def ping_server(request, fug=0):
     global last_response
     try:
         # Snippet below from http://pastebin.com/TGhPBPGp
@@ -645,10 +714,20 @@ def ping_server(request):
             return False
     except socket.timeout:
         log.error("Socket timed out!")
+        if not(fug >= 2):
+            log.error("Attempting to reconnect, try #%d" % (fug + 1))
+            time.sleep(60)
+            return ping_server(request, fug + 1)
         return False
     except socket.error:
-        log.error("Connection lost!")
+        log.error("Connection lost! try #%d" % (fug))
+        if not(fug >= 2):
+            log.error("Attempting to reconnect, try #%d" % (fug + 1))
+            time.sleep(120)
+            return ping_server(request, fug + 1)
         return False
+    if(fug > 0):
+        log.info("Connection with the server reestablished")
     return True
 
 LOGPATH = config.get('paths.crashlog', 'logs')
@@ -690,21 +769,19 @@ byond_man = os.path.abspath(os.path.join(byond_base, 'man'))
 
 is_posix = platform.system() != 'Windows'
 
-# Should probably make this configurable.
 DREAMDAEMON_IMAGE = 'DreamDaemon' if is_posix else 'dreamdaemon.exe'
 DREAMDAEMON_EXE = 'DreamDaemon' if is_posix else os.path.join(byond_bin, 'dreamdaemon.exe')
 
 DREAMMAKER_EXE = 'DreamMaker' if is_posix else os.path.join(byond_bin, 'dm.exe')
 
 # Does the job of byondsetup.
-if is_posix:
-    ENV.merge({
-        'BYOND_SYSTEM': byond_base,
+ENV.merge({
+    'BYOND_SYSTEM': byond_base,
 
-        'PATH': ':'.join([byond_bin] + os.environ['PATH'].split(':')),
-        'LD_LIBRARY_PATH': ':'.join([byond_bin] + os.environ.get('LD_LIBRARY_PATH', '').split(':')),
-        'MANPATH': ':'.join([byond_man] + os.environ.get('MANPATH', '').split(':'))
-    })
+    'PATH':            ':'.join([byond_bin] + os.environ['PATH'].split(':')),
+    'LD_LIBRARY_PATH': ':'.join([byond_bin] + os.environ.get('LD_LIBRARY_PATH', '').split(':')),
+    'MANPATH':         ':'.join([byond_man] + os.environ.get('MANPATH', '').split(':'))
+})
 
 findDD()
 
@@ -720,40 +797,58 @@ with log.info('Gathering git repository statuses...'):
         else:
             log.warn('{0} repository ({1}) is missing!'.format(reponame.capitalize(), repopath))
 
+need_compile = False
+need_staging_compile = False
+need_binary = False
 checkForUpdates(True)
 
-dmb_filename = getDMB(ignore_mapvoting=True)
+staging_filename = os.path.join(config.get('git.game.path'), 'vgstation13.dmb')
+dmb_filename = config.get('commands.compile.dmb')
 dmb_filepath = os.path.join(config.get('paths.run'), dmb_filename)
 
-need_compile = False
+
 if not os.path.isfile(dmb_filepath):
     msg = 'Main DMB ({}) missing!'.format(os.path.basename(dmb_filename))
     log.warn(msg)
     send_nudge(msg)
-    need_compile = True
+    need_binary = True
 
+if not os.path.isfile(staging_filename):
+    log.warn('Staging DMB is missing')
+    send_nudge('Staging DMB is missing')
+    need_staging_compile = True
 map_list = config.get('commands.compile.map-voting.maps', {'': None})
 for map_name, map_filename in map_list.items():
     if map_filename is not None:
         map_dmb = os.path.join(config.get('paths.run'), 'maps', 'voting', map_name, os.path.basename(dmb_filename))
         if not os.path.isfile(map_dmb):
-            need_compile = True
-            msg = 'DMB for map {} missing!'.format(map_dmb)
+            need_staging_compile = True
+            msg = 'DMB for map {} missing!'.format(map_name)
             log.warn(msg)
             send_nudge(msg)
+            missing_maps.append(map_name)
 
-if need_compile:
-    Compile(False, no_restart=True)
+if need_compile or compile_interrupted or need_staging_compile and not compiling:
+    checkForUpdates(ping_server(b'?status', 3), True)
+    #Compile(False, no_restart=True)
+if need_binary and not compiling:
+    checkForUpdates(ping_server(b'?status', 3))
+    CopyBinaries(False)
+    need_binary = False
 
-updateConfig()
+# with os_utils.TimeExecution('Copy config'):
+    # updateConfig()
 
 waiting_on_server_response = os.path.isfile(os.path.join(config.get('paths.run'), 'data', 'UPDATE_READY.txt'))
 if waiting_on_server_response:
     log.warn('Server waiting to die.')
+else:
+    if need_compile and not compiling and not waiting_for_next_commit:
+        CopyBinaries(False)
 
 while True:
     if waiting_for_next_commit:
-        checkForUpdates(False)
+        checkForUpdates(ping_server(b'?status', 3))
         if waiting_for_next_commit:
             time.sleep(50)
             continue
