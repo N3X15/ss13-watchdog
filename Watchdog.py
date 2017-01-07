@@ -249,6 +249,7 @@ def Compile(serverState, no_restart=False):
                 log.info('Killing DreamDaemon PID#{}...'.format(process.pid))
                 process.kill()
                 process.wait()
+                time.sleep(5)
         except psutil.AccessDenied:
             continue
 
@@ -559,9 +560,11 @@ def restartServer():
     findDD()
     if dd_proc is not None and dd_proc.is_running():
         dd_proc.kill()
+        dd_proc.wait()
         dd_proc = None
         log.warn('DreamDaemon still running, process killed.')
         send_nudge('DreamDaemon still running, process killed.')
+        time.sleep(5)
 
     dme_filename = getDMB(ignore_mapvoting=True)
 
