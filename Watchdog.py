@@ -3,7 +3,7 @@ import json
 import logging
 import logging.handlers
 import os
-import psutil
+import platform
 import re
 import shutil
 import socket
@@ -12,15 +12,16 @@ import subprocess
 import sys
 import time
 import urllib
-import platform
+
+import psutil
+from buildtools import *
+from buildtools import os_utils
+from buildtools.bt_logging import IndentLogger
+from buildtools.wrapper import Git
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(script_dir, 'lib', 'buildtools'))
 
-from buildtools import *
-from buildtools import os_utils
-from buildtools.wrapper import Git
-from buildtools.bt_logging import IndentLogger
 
 
 class QChdir(Chdir):
