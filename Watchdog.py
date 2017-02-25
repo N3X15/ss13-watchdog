@@ -207,6 +207,15 @@ def Compile(serverState, no_restart=False):
         with os_utils.TimeExecution('Copy patches'):
             os_utils.copytree(os.path.abspath(config.get('git.patches.path')), os.path.abspath(config.get('git.game.path')), ignore=['.git/', '.bak'], verbose=True, ignore_mtime=True)
 
+    libvg_dir = os.path.join(config.get('paths.run'), config.get('libvg.path','libvg'))
+    if config.get('libvg.enabled',False):
+        if not os.path.isdir(libvg_dir):
+            log.warn('Could not find libvg path %r!',libvg_dir)
+        else:
+            with log.info('Updating libvg...'):
+                with QChdir(libvg_dir):
+                    os_utils.cmd(['make'],critical=True,echo=True,show_output=True)
+
     with QChdir(config.get('git.game.path')):
         #zippity = os.path.join(config.get('git.game.path'), 'zippitydooda.py')
         #subprocess.call('python {}'.format(zippity), shell=True)
@@ -520,6 +529,7 @@ def updateConfig():
                 for _line in template:
                     line = _line.format(GIT_BRANCH=config.get('git.game.branch', 'master'), GIT_REMOTE=config.get('git.game.remotename', 'origin'), GIT_COMMIT=config.get('git.game.commit', '???'))
                     motd.write(line)
+        log.info('Wrote %s to %s.',inputRules,outputRules)
 
 
 # Returns true if there's an update.

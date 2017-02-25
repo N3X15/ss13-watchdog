@@ -11,7 +11,7 @@ monitor:
   wait-for-ready: true
   # Use threading on the server?  (Default: False)
   threads: false
-  
+
 commands:
   # Compile parameters
   compile:
@@ -62,6 +62,11 @@ nudge:
   port: 45678
   # Access key (Nudge 2.0 only, ignored for nudge 1)
   key: ""
+libvg:
+  # Enable libvg compiler? (You can leave this on, only runs if it detects libvg.)
+  enabled: yes
+  # Path to libvg relative to paths.run
+  path: libvg
 # Self-explanatory
 paths:
   byond:    /home/gmod/byond
